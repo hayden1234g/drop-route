@@ -65,8 +65,15 @@ body[data-view=route] [data-view=tips], body[data-view=tips] [data-view=route] {
 .logrow .lt .who { font-weight: 600; } .logrow .lt .when { margin-left: auto; font-size: 12px; color: var(--dim); white-space: nowrap; }
 .logrow .addr2 { font-size: 13px; color: var(--dim); }
 .logrow .money { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
-.logrow .money label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; flex: 1; }
-.logrow .money input { padding: 7px 8px; }
+.logrow .money label { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 4px; flex: 1; white-space: nowrap; min-width: 0; }
+.logrow .money input { padding: 7px 8px; min-width: 0; }
+[hidden] { display: none !important; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.chip-t { font-size: 12px; padding: 3px 9px; border-radius: 99px; background: none; color: var(--dim); }
+.chip-t.on { background: rgba(90,169,255,.16); border-color: var(--blue); color: var(--text); }
+.taged { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.taged span { background: var(--card2); border: 1px solid var(--line); border-radius: 99px; padding: 3px 4px 3px 10px; font-size: 13px; display: inline-flex; align-items: center; }
+.taged span button { background: none; border: none; color: var(--dim); padding: 0 6px; font-size: 15px; }
 .logrow .edit { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
 .logrow .edit .w { grid-column: 1 / -1; }
 .logrow .edit label { font-size: 11px; color: var(--dim); }
@@ -185,7 +192,7 @@ details summary { cursor: pointer; color: var(--dim); font-size: 13px; }
   </div>
   <div id="logList"></div>
   <div class="row" style="margin-top:10px"><button class="sm" id="moreLog" hidden>Show more</button></div>
-  <p class="muted" style="margin-top:10px">Every stop you mark ✓ Delivered lands here. Add the base pay and tip once Shipt shows the final amount, since tips can change after delivery. The log stays only on this phone, so use Export now and then as a backup.</p>
+  <p class="muted" style="margin-top:10px">Every stop you mark ✓ Delivered lands here. Add the base pay and tip once Shipt shows the final amount, since tips can change after delivery. Tap the options that apply. The log lives on this phone, so connect a Google Sheet below for automatic backup, or use Export now and then.</p>
   <div class="row"><button class="sm" id="exportCsv">Export CSV</button><button class="sm" id="importCsv">Import CSV</button><input type="file" id="importFile" accept=".csv,text/csv" hidden></div>
 </section>
 
@@ -203,6 +210,22 @@ details summary { cursor: pointer; color: var(--dim); font-size: 13px; }
 <section data-view="tips">
   <h2>Repeat customers</h2>
   <div id="byCust"></div>
+</section>
+
+<section data-view="tips">
+  <h2>Tips by option</h2>
+  <div id="byTag"></div>
+  <details style="margin-top:10px"><summary>Edit the option list</summary>
+    <div class="taged" id="tagEd"></div>
+    <div class="row" style="margin-top:8px"><input type="text" id="newTag" class="grow" placeholder="New option, e.g. Gated community" maxlength="40"><button class="sm" id="addTag">Add</button></div>
+    <p class="muted" style="margin-top:6px">Removing an option keeps it on orders already tagged with it.</p>
+  </details>
+</section>
+
+<section data-view="tips">
+  <h2>Google Sheet backup</h2>
+  <div id="sheetStatus" class="muted"></div>
+  <div id="sheetSetup"></div>
 </section>
 
 <section data-view="route">
@@ -224,7 +247,8 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-const settings = Object.assign({ token: '', store: null, service: 4, allowEarly: true, returnStore: false, navApp: 'google' }, LS.get('dr.settings', {}));
+const DEFAULT_TAGS = ['Left a note', 'Replaced item', 'Out of stock / refund', 'Tip was a %', 'Always does 20%', 'Raised tip after', 'Lowered tip after', 'Late', 'Heavy order', 'Bad weather'];
+const settings = Object.assign({ token: '', store: null, service: 4, allowEarly: true, returnStore: false, navApp: 'google', sheetUrl: '', sheetKey: '', tags: DEFAULT_TAGS.slice() }, LS.get('dr.settings', {}));
 let sess = LS.get('dr.session', null);
 if (!sess || Date.now() - (sess.savedAt || 0) > 14 * 3600e3) sess = { stops: [], nextId: 1 };
 let stops = sess.stops;
@@ -423,16 +447,21 @@ function historyFor(s) {
   const hits = log.filter(e => e.id !== s.logId && ((k && streetKey(e.address || '') === k) || (nm && normName(e.customer) === nm && z && e.zip === z)));
   if (!hits.length) return null;
   const t = hits.filter(hasTip);
-  return { n: hits.length, avg: t.length ? t.reduce((a, e) => a + +e.tip, 0) / t.length : null };
+  // habits: options on at least half of their past orders (or "always" ones ever)
+  const cnt = {};
+  for (const e of hits) for (const g of e.tags || []) cnt[g] = (cnt[g] || 0) + 1;
+  const habits = Object.keys(cnt).filter(g => /always/i.test(g) || (hits.length >= 2 && cnt[g] / hits.length >= 0.5));
+  return { n: hits.length, avg: t.length ? t.reduce((a, e) => a + +e.tip, 0) / t.length : null, habits };
 }
 function repeatBadge(s) {
   const h = historyFor(s); if (!h) return '';
-  return `<div class="repeat">🔁 Repeat customer · ${h.n} past order${h.n > 1 ? 's' : ''}${h.avg != null ? ` · avg tip ${money(h.avg)}` : ''}</div>`;
+  return `<div class="repeat">🔁 Repeat customer · ${h.n} past order${h.n > 1 ? 's' : ''}${h.avg != null ? ` · avg tip ${money(h.avg)}` : ''}${h.habits.length ? ` · ${h.habits.map(esc).join(', ')}` : ''}</div>`;
 }
+const newLogId = () => 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 function logDelivery(s) {
-  const id = 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  log.push({ id, ts: Date.now(), date: localDate(), customer: s.customer || '', address: s.address, zip: zipOf(s.address, s.geo), lat: s.lat, lon: s.lon, store: storeName(), pay: null, tip: null });
-  s.logId = id; saveLog(); updateTipBadge();
+  const id = newLogId();
+  log.push({ id, ts: Date.now(), date: localDate(), customer: s.customer || '', address: s.address, zip: zipOf(s.address, s.geo), lat: s.lat, lon: s.lon, store: storeName(), pay: null, tip: null, tags: [], note: s.note || '', updated: Date.now() });
+  s.logId = id; saveLog(); updateTipBadge(); queueSync(id);
 }
 $('#stops').addEventListener('input', e => {
   const k = e.target.dataset.k; if (!k) return;
@@ -788,7 +817,7 @@ $('#itin').addEventListener('click', e => {
 $('#doneList').addEventListener('click', e => {
   const b = e.target.closest('[data-undo]'); if (!b) return;
   const s = stops.find(x => x.id == b.dataset.undo);
-  if (s) { if (s.logId) { log = log.filter(e => e.id !== s.logId); s.logId = null; saveLog(); updateTipBadge(); } s.done = false; s.doneAt = null; saveSession(); renderStops(); renderRoute(); }
+  if (s) { if (s.logId) { log = log.filter(e => e.id !== s.logId); queueSync(s.logId, true); s.logId = null; saveLog(); updateTipBadge(); } s.done = false; s.doneAt = null; saveSession(); renderStops(); renderRoute(); }
 });
 
 // ---------- controls ----------
@@ -856,7 +885,7 @@ function updateTipBadge() {
 function setView(v) {
   document.body.dataset.view = v;
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
-  if (v === 'tips') { renderLog(); renderTipStats(); }
+  if (v === 'tips') { renderLog(); renderTipStats(); renderSheetSetup(); renderSheetStatus(); }
   else if (map) setTimeout(() => map.invalidateSize(), 50);
   window.scrollTo(0, 0);
 }
@@ -874,7 +903,10 @@ function renderLog() {
         <label>Pay $<input type="number" inputmode="decimal" step="0.01" min="0" data-k="pay" value="${e.pay ?? ''}"></label>
         <label>Tip $<input type="number" inputmode="decimal" step="0.01" min="0" data-k="tip" value="${e.tip ?? ''}"></label>
       </div>
+      <div class="chips">${chipList(e).map(g => `<button class="chip-t ${(e.tags || []).includes(g) ? 'on' : ''}" data-tag="${esc(g)}">${esc(g)}</button>`).join('')}</div>
+      ${e.note ? `<div class="addr2" style="margin-top:6px">📝 ${esc(e.note)}</div>` : ''}
       <details><summary>Edit</summary><div class="edit">
+        <div class="w"><label>Note</label><input type="text" data-k="note" value="${esc(e.note)}" placeholder="anything else worth remembering"></div>
         <div><label>Customer</label><input type="text" data-k="customer" value="${esc(e.customer)}"></div>
         <div><label>Date</label><input type="date" data-k="date" value="${esc(e.date)}"></div>
         <div class="w"><label>Address</label><input type="text" data-k="address" value="${esc(e.address)}"></div>
@@ -898,18 +930,30 @@ $('#logList').addEventListener('input', e => {
   if (k === 'address' && !en.zip) en.zip = zipOf(v);
   if (k === 'address') { en.lat = en.lon = null; }
   if (k === 'tip') e.target.closest('.logrow').classList.toggle('missing', !hasTip(en));
-  saveLog(); updateTipBadge(); renderTipStats();
+  en.updated = Date.now(); saveLog(); updateTipBadge(); renderTipStats(); queueSync(en.id);
 });
+// options shown on a row: the current option list, plus any old ones this entry still carries
+const chipList = e => settings.tags.concat((e.tags || []).filter(g => !settings.tags.includes(g)));
 $('#logList').addEventListener('click', e => {
+  const chip = e.target.closest('[data-tag]');
+  if (chip) {
+    const en = log.find(x => x.id === chip.closest('.logrow').dataset.id); if (!en) return;
+    const g = chip.dataset.tag; en.tags = en.tags || [];
+    en.tags = en.tags.includes(g) ? en.tags.filter(x => x !== g) : en.tags.concat(g);
+    chip.classList.toggle('on', en.tags.includes(g));
+    en.updated = Date.now(); saveLog(); renderTipStats(); queueSync(en.id);
+    return;
+  }
   if (!e.target.closest('[data-del-log]')) return;
   const id = e.target.closest('.logrow').dataset.id;
   if (!confirm('Delete this logged order?')) return;
   log = log.filter(x => x.id !== id); for (const s of stops) if (s.logId === id) s.logId = null;
-  saveLog(); saveSession(); updateTipBadge(); renderLog(); renderTipStats();
+  saveLog(); saveSession(); updateTipBadge(); renderLog(); renderTipStats(); queueSync(id, true);
 });
 $('#addPast').onclick = () => {
-  log.push({ id: 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: Date.now(), date: localDate(), customer: '', address: '', zip: '', lat: null, lon: null, store: storeName(), pay: null, tip: null });
-  saveLog(); updateTipBadge(); $('#onlyMissing').checked = false; logLimit = Math.max(logLimit, 40); renderLog(); renderTipStats();
+  const id = newLogId();
+  log.push({ id, ts: Date.now(), date: localDate(), customer: '', address: '', zip: '', lat: null, lon: null, store: storeName(), pay: null, tip: null, tags: [], note: '', updated: Date.now() });
+  saveLog(); updateTipBadge(); queueSync(id); $('#onlyMissing').checked = false; logLimit = Math.max(logLimit, 40); renderLog(); renderTipStats();
   const first = $('#logList .logrow'); if (first) { first.querySelector('details').open = true; first.querySelector('[data-k=customer]').focus(); }
 };
 
@@ -955,7 +999,178 @@ function renderTipStats() {
   const cust = groupBy(e => normName(e.customer) && (e.zip || streetKey(e.address || '')) ? normName(e.customer) + '|' + (e.zip || streetKey(e.address || '')) : '').filter(r => r.n >= 2);
   $('#byCust').innerHTML = statTable(cust, 'Customer', r => `${esc(r.sample.customer)} <span class="muted">${esc(r.sample.zip || '')}</span>`, 'Customers you deliver to 2+ times show up here.');
   drawTipMap(zips);
+  renderByTag();
 }
+function renderByTag() {
+  const tipped = log.filter(hasTip);
+  const all = [...new Set(settings.tags.concat(...log.map(e => e.tags || [])))];
+  const avg = a => a.length ? a.reduce((s, e) => s + +e.tip, 0) / a.length : null;
+  const rows = all.map(g => {
+    const w = tipped.filter(e => (e.tags || []).includes(g)), wo = tipped.filter(e => !(e.tags || []).includes(g));
+    return { g, n: w.length, a: avg(w), b: avg(wo) };
+  }).filter(r => r.n).sort((x, y) => y.n - x.n);
+  $('#byTag').innerHTML = rows.length
+    ? `<table class="tt"><tr><th>Option</th><th class="n">Orders</th><th class="n">Avg tip with</th><th class="n">Without</th><th class="n">Diff</th></tr>` +
+      rows.map(r => { const d = r.a != null && r.b != null ? r.a - r.b : null; return `<tr class="${r.n < MIN_N ? 'thin' : ''}"><td>${esc(r.g)}</td><td class="n">${r.n}</td><td class="n">${money(r.a)}</td><td class="n">${r.b != null ? money(r.b) : '—'}</td><td class="n" style="color:${d == null ? 'inherit' : d >= 0 ? 'var(--ok)' : 'var(--bad)'}">${d == null ? '—' : (d >= 0 ? '+' : '−') + money(Math.abs(d))}</td></tr>`; }).join('') +
+      `</table><p class="muted" style="margin-top:6px">Compares tipped orders that have each option against all the others. For the note test, tag "Left a note" on every order where you leave one.</p>`
+    : `<p class="muted">Tap options on logged orders (like "Replaced item") to see how each one affects tips.</p>`;
+  $('#tagEd').innerHTML = settings.tags.map((g, i) => `<span>${esc(g)}<button data-rm-tag="${i}" title="Remove">×</button></span>`).join('');
+}
+$('#tagEd').addEventListener('click', e => {
+  const b = e.target.closest('[data-rm-tag]'); if (!b) return;
+  settings.tags.splice(+b.dataset.rmTag, 1); saveSettings(); renderByTag(); renderLog();
+});
+$('#addTag').onclick = () => {
+  const v = $('#newTag').value.trim().replace(/;/g, ',');
+  if (!v) return;
+  if (settings.tags.some(g => g.toLowerCase() === v.toLowerCase())) { toast('Already in the list.'); return; }
+  settings.tags.push(v); saveSettings(); $('#newTag').value = ''; renderByTag(); renderLog();
+};
+$('#newTag').addEventListener('keydown', e => { if (e.key === 'Enter') $('#addTag').click(); });
+
+// ---------- Google Sheet backup (Apps Script web app bound to the user's sheet) ----------
+let syncQ = LS.get('dr.syncq', { up: [], del: [] });
+let syncTimer = null, syncing = false, lastSync = LS.get('dr.lastSync', null), syncErr = '';
+const saveQ = () => LS.set('dr.syncq', syncQ);
+function queueSync(id, del) {
+  if (!settings.sheetUrl) return;
+  if (del) { syncQ.up = syncQ.up.filter(x => x !== id); if (!syncQ.del.includes(id)) syncQ.del.push(id); }
+  else if (!syncQ.up.includes(id)) syncQ.up.push(id);
+  saveQ(); scheduleSync(4000); renderSheetStatus();
+}
+function scheduleSync(ms) { clearTimeout(syncTimer); syncTimer = setTimeout(runSync, ms); }
+const SHEET_COLS = ['id', 'date', 'customer', 'address', 'zip', 'store', 'pay', 'tip', 'tags', 'note', 'lat', 'lon', 'updated'];
+const toSheetRow = e => Object.fromEntries(SHEET_COLS.map(c => [c, c === 'tags' ? (e.tags || []).join('; ') : (e[c] ?? '')]));
+async function sheetCall(body) {
+  const r = await fetch(settings.sheetUrl, { method: 'POST', body: JSON.stringify({ key: settings.sheetKey, ...body }) }); // text/plain: no CORS preflight
+  let j; try { j = await r.json(); } catch { throw new Error(`unexpected reply (HTTP ${r.status}). Was it deployed with access "Anyone"?`); }
+  if (!j.ok) throw new Error(j.error || 'sheet error');
+  return j;
+}
+async function runSync() {
+  if (syncing || !settings.sheetUrl || (!syncQ.up.length && !syncQ.del.length)) return;
+  syncing = true;
+  const up = syncQ.up.slice(0, 200), del = syncQ.del.slice();
+  try {
+    await sheetCall({ action: 'sync', upsert: up.map(id => log.find(e => e.id === id)).filter(Boolean).map(toSheetRow), del });
+    syncQ.up = syncQ.up.filter(x => !up.includes(x)); syncQ.del = syncQ.del.filter(x => !del.includes(x)); saveQ();
+    lastSync = Date.now(); LS.set('dr.lastSync', lastSync); syncErr = '';
+    if (syncQ.up.length) scheduleSync(500);
+  } catch (e) { syncErr = e.message === 'Failed to fetch' ? 'no connection' : e.message; scheduleSync(60e3); }
+  syncing = false; renderSheetStatus();
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden) runSync(); });
+window.addEventListener('online', () => scheduleSync(1000));
+function renderSheetStatus() {
+  const el = $('#sheetStatus'); if (!el) return;
+  if (!settings.sheetUrl) { el.textContent = 'Not connected. Every logged order can copy itself to a Google Sheet you own.'; return; }
+  const waiting = syncQ.up.length + syncQ.del.length;
+  el.innerHTML = (syncErr ? `<span style="color:var(--warn)">⚠ Last backup failed: ${esc(syncErr)}. It'll retry automatically.</span><br>` : '') +
+    (lastSync ? `✓ Last backed up ${fmtDay(localDate(lastSync))} ${fmtTime(lastSync)}` : 'Connected, not backed up yet') +
+    (waiting ? ` · ${waiting} change${waiting > 1 ? 's' : ''} waiting` : ' · all caught up');
+}
+function scriptCode() {
+  return `// Drop Route backup: paste into Extensions > Apps Script, then Deploy > New deployment > Web app.
+const KEY = '${settings.sheetKey}';
+const HEAD = ${JSON.stringify(SHEET_COLS)};
+function sheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('Tips') || ss.insertSheet('Tips');
+  if (sh.getLastRow() === 0) {
+    sh.appendRow(HEAD); sh.setFrozenRows(1);
+    sh.getRange(1, 1, 1, HEAD.length).setFontWeight('bold');
+    sh.getRange('B:B').setNumberFormat('@'); sh.getRange('E:E').setNumberFormat('@'); // keep dates & ZIPs as typed
+  }
+  return sh;
+}
+function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function doGet() { return out_({ ok: true, msg: 'Drop Route backup is running.' }); }
+function doPost(e) {
+  const lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    const req = JSON.parse(e.postData.contents);
+    if (req.key !== KEY) return out_({ ok: false, error: 'wrong key' });
+    const sh = sheet_(), n = sh.getLastRow() - 1;
+    const data = n > 0 ? sh.getRange(2, 1, n, HEAD.length).getValues() : [];
+    if (req.action === 'get') return out_({ ok: true, rows: data.map(r => Object.fromEntries(HEAD.map((h, i) => [h, r[i]]))) });
+    if (req.action === 'ping') return out_({ ok: true, rows: n });
+    const idx = new Map(data.map((r, i) => [String(r[0]), i]));
+    for (const row of req.upsert || []) {
+      const vals = [HEAD.map(h => row[h] == null ? '' : row[h])];
+      if (idx.has(row.id) && idx.get(row.id) >= 0) sh.getRange(idx.get(row.id) + 2, 1, 1, HEAD.length).setValues(vals);
+      else { sh.getRange(sh.getLastRow() + 1, 1, 1, HEAD.length).setValues(vals); idx.set(row.id, -1); }
+    }
+    (req.del || []).map(id => idx.get(id)).filter(i => i != null && i >= 0).sort((a, b) => b - a).forEach(i => sh.deleteRow(i + 2));
+    return out_({ ok: true });
+  } finally { lock.releaseLock(); }
+}`;
+}
+function connectLink() { return location.origin + location.pathname + '#sheet=' + btoa(JSON.stringify({ u: settings.sheetUrl, k: settings.sheetKey })); }
+function renderSheetSetup() {
+  if (!settings.sheetKey) { settings.sheetKey = Array.from(crypto.getRandomValues(new Uint8Array(18)), b => b.toString(16).padStart(2, '0')).join(''); saveSettings(); }
+  const el = $('#sheetSetup');
+  if (settings.sheetUrl) {
+    el.innerHTML = `<div class="row" style="margin-top:10px">
+        <button class="sm" id="syncAll">Back up everything now</button>
+        <button class="sm" id="pullSheet">Restore from sheet</button>
+        <button class="sm" id="phoneLink">Copy link for another device</button>
+        <button class="sm" id="disconnect" style="margin-left:auto">Disconnect</button></div>
+      <p class="muted" style="margin-top:8px">Changes copy to the <b>Tips</b> tab of your sheet a few seconds after you make them (retried if you're offline). Restore merges the sheet into this device, so use it on a new phone.</p>`;
+    $('#syncAll').onclick = () => { log.forEach(e => { if (!syncQ.up.includes(e.id)) syncQ.up.push(e.id); }); saveQ(); renderSheetStatus(); runSync(); };
+    $('#pullSheet').onclick = pullFromSheet;
+    $('#phoneLink').onclick = () => copyText(connectLink(), 'Link copied. Open it on your phone to connect it to the same sheet. Keep it private: it can read your log.');
+    $('#disconnect').onclick = () => { if (!confirm('Stop backing up to this sheet? (The sheet keeps what it has.)')) return; settings.sheetUrl = ''; saveSettings(); syncQ = { up: [], del: [] }; saveQ(); renderSheetSetup(); renderSheetStatus(); };
+    return;
+  }
+  el.innerHTML = `<ol class="muted" style="padding-left:18px; margin:10px 0 0">
+      <li>On a computer, open <a href="https://sheets.new" target="_blank" rel="noopener" style="color:var(--blue)">sheets.new</a> and name the new sheet (e.g. "Drop Route tips").</li>
+      <li><b>Extensions → Apps Script</b>. Delete what's there and paste the script: <button class="sm" id="copyScript">Copy script</button></li>
+      <li>Click <b>Deploy → New deployment</b>. Under type, choose <b>Web app</b>. Set <i>Execute as</i> to <b>Me</b> and <i>Who has access</i> to <b>Anyone</b>, then Deploy and allow access.</li>
+      <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>) and paste it here:</li></ol>
+    <div class="row" style="margin-top:8px"><input type="text" id="sheetUrlIn" class="grow" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"><button class="sm primary" id="connectSheet">Connect</button></div>
+    <p class="muted" style="margin-top:8px">The script includes a secret key from this device, so only Drop Route can read or write the sheet. If you set it up on your computer, use "Copy link for another device" afterwards to connect your phone.</p>`;
+  $('#copyScript').onclick = () => copyText(scriptCode(), 'Script copied. Paste it into Apps Script.');
+  $('#connectSheet').onclick = async () => {
+    const u = $('#sheetUrlIn').value.trim();
+    if (!/^https:\/\/script\.google(usercontent)?\.com\/.+\/exec$/.test(u)) { toast('That should be a script.google.com URL ending in /exec.'); return; }
+    settings.sheetUrl = u;
+    try { const j = await sheetCall({ action: 'ping' }); saveSettings(); toast(`Connected. The sheet has ${j.rows > 0 ? j.rows : 0} rows.`); }
+    catch (e) { settings.sheetUrl = ''; toast('Could not connect: ' + (e.message === 'Failed to fetch' ? 'check the URL and that access is "Anyone"' : e.message), 6000); return; }
+    log.forEach(e => syncQ.up.push(e.id)); saveQ();
+    renderSheetSetup(); renderSheetStatus(); runSync();
+  };
+}
+async function copyText(t, msg) {
+  try { await navigator.clipboard.writeText(t); toast(msg, 5000); }
+  catch { prompt('Copy this:', t); }
+}
+async function pullFromSheet() {
+  try {
+    const j = await sheetCall({ action: 'get' });
+    let added = 0, updated = 0;
+    for (const r of j.rows || []) {
+      if (!r.id) continue;
+      const num = v => v === '' || v == null ? null : +v;
+      const en = { id: String(r.id), date: String(r.date || '').slice(0, 10), customer: String(r.customer || ''), address: String(r.address || ''), zip: String(r.zip || ''), store: String(r.store || ''),
+        pay: num(r.pay), tip: num(r.tip), tags: String(r.tags || '').split(';').map(s => s.trim()).filter(Boolean), note: String(r.note || ''), lat: num(r.lat), lon: num(r.lon), updated: +r.updated || 0 };
+      const i = log.findIndex(x => x.id === en.id);
+      if (i < 0) { log.push({ ts: en.updated || Date.now(), ...en }); added++; }
+      else if ((en.updated || 0) > (log[i].updated || 0)) { log[i] = { ...log[i], ...en }; updated++; }
+    }
+    saveLog(); updateTipBadge(); renderLog(); renderTipStats();
+    toast(`Restored: ${added} new, ${updated} updated.`);
+  } catch (e) { toast('Restore failed: ' + e.message, 6000); }
+}
+// one-tap connect from a link made on another device: #sheet=<base64>
+(function () {
+  const m = location.hash.match(/#sheet=([A-Za-z0-9+/=]+)/);
+  if (!m) return;
+  try {
+    const o = JSON.parse(atob(m[1]));
+    if (o.u && o.k) { settings.sheetUrl = o.u; settings.sheetKey = o.k; saveSettings(); setTimeout(() => { toast('Connected to your Google Sheet backup. Tap Restore on the Tips tab to pull past orders.', 6000); }, 300); }
+  } catch {}
+  history.replaceState(null, '', location.pathname);
+})();
 function drawTipMap(zips) {
   const pts = zips.filter(z => z.clat != null);
   const el = $('#tipMap');
@@ -978,10 +1193,10 @@ function drawTipMap(zips) {
 }
 
 // CSV backup
-const CSV_COLS = ['id', 'date', 'customer', 'address', 'zip', 'store', 'pay', 'tip', 'lat', 'lon'];
+const CSV_COLS = ['id', 'date', 'customer', 'address', 'zip', 'store', 'pay', 'tip', 'tags', 'note', 'lat', 'lon', 'updated'];
 function toCSV() {
   const cell = v => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-  return [CSV_COLS.join(',')].concat(log.map(e => CSV_COLS.map(c => cell(e[c])).join(','))).join('\r\n');
+  return [CSV_COLS.join(',')].concat(log.map(e => CSV_COLS.map(c => cell(c === 'tags' ? (e.tags || []).join('; ') : e[c])).join(','))).join('\r\n');
 }
 function parseCSV(text) {
   const rows = []; let row = [], f = '', q = false;
@@ -1012,9 +1227,11 @@ $('#importFile').onchange = async e => {
   for (const r of rows) {
     const o = {}; head.forEach((h, i) => o[h] = r[i] ?? '');
     const num = v => v === '' || v == null ? null : +v;
-    const en = { id: o.id || 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: Date.now(), date: o.date || localDate(), customer: o.customer || '', address: o.address || '', zip: (o.zip || zipOf(o.address)).slice(0, 5), store: o.store || '', pay: num(o.pay), tip: num(o.tip), lat: num(o.lat), lon: num(o.lon) };
+    const en = { id: o.id || 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: Date.now(), date: o.date || localDate(), customer: o.customer || '', address: o.address || '', zip: (o.zip || zipOf(o.address)).slice(0, 5), store: o.store || '', pay: num(o.pay), tip: num(o.tip), lat: num(o.lat), lon: num(o.lon),
+      tags: (o.tags || '').split(';').map(s => s.trim()).filter(Boolean), note: o.note || '', updated: +o.updated || Date.now() };
     const i = log.findIndex(x => x.id === en.id);
     if (i >= 0) { log[i] = { ...log[i], ...en, ts: log[i].ts }; updated++; } else { log.push(en); added++; }
+    queueSync(en.id);
   }
   saveLog(); updateTipBadge(); renderLog(); renderTipStats();
   toast(`Imported: ${added} new, ${updated} updated.`);
@@ -1023,6 +1240,7 @@ $('#importFile').onchange = async e => {
 renderStops();
 renderRoute();
 updateTipBadge();
+if (settings.sheetUrl && (syncQ.up.length || syncQ.del.length)) scheduleSync(2000);
 </script>
 </body>
 </html>
