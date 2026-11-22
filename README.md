@@ -7,6 +7,8 @@ Phone-friendly route planner for batched delivery orders. Live at https://hayden
 3. **Find fastest route** tries every stop order (up to 9 stops; larger batches use a fast heuristic) and picks the one that finishes soonest while respecting delivery windows. Each minute late counts 5x.
 4. Tap **Delivered** at each stop and the rest re-plan from there with fresh drive times.
 
+**Tips tab:** each delivered stop is logged with the customer name read from the screenshot. Add pay and tip later. It shows average tip by ZIP (map), by store and by repeat customer, and flags repeat customers on new orders. The log lives in the browser only; use Export CSV for backups.
+
 Drive times come from free OSRM (typical speeds, no traffic) unless you paste a Mapbox public token (`pk.…`) in Settings, which gives live traffic for up to 9 stops.
 
 Single static `index.html`, with no backend. Local preview: launch.json entry `drop-route` (port 4816).
